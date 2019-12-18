@@ -19,7 +19,9 @@
  */
 package org.sonar.python.checks;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.sonar.check.Rule;
@@ -44,6 +46,8 @@ import org.sonar.python.tree.TreeUtils;
 public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
   private boolean hasWildcardImport = false;
   private boolean callGlobalsOrLocals = false;
+  private List<String> ignoredNames = new ArrayList<>();
+  private static List<Symbol> ignoredSymbols = new ArrayList<>();
 
   @Override
   public void initialize(Context context) {
@@ -54,16 +58,20 @@ public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
       fileInput.accept(exceptionVisitor);
       hasWildcardImport = exceptionVisitor.hasWildcardImport;
       callGlobalsOrLocals = exceptionVisitor.callGlobalsOrLocals;
+      ignoredNames.clear();
     });
 
     context.registerSyntaxNodeConsumer(Tree.Kind.NAME, ctx -> {
       Name name = (Name) ctx.syntaxNode();
-      if (!callGlobalsOrLocals && !hasWildcardImport && name.isVariable() && name.symbol() == null) {
+      if (!callGlobalsOrLocals && !hasWildcardImport && name.isVariable() && name.symbol() == null && !ignoredNames.contains(name.name())) {
+        ignoredNames.add(name.name());
         ctx.addIssue(name, name.name() + " is not defined. Change its name or define it before using it");
       }
     });
 
     context.registerSyntaxNodeConsumer(Tree.Kind.FUNCDEF, ctx -> {
+      ignoredNames.clear();
+      ignoredSymbols.clear();
       FunctionDef functionDef = (FunctionDef) ctx.syntaxNode();
       if (TreeUtils.hasDescendant(functionDef, tree -> tree.is(Tree.Kind.TRY_STMT))) {
         return;
@@ -87,7 +95,9 @@ public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
           currentState.put(symbol, DefinedVariablesAnalysis.VariableDefinition.DEFINED);
         }
         DefinedVariablesAnalysis.VariableDefinition varDef = currentState.getOrDefault(symbol, DefinedVariablesAnalysis.VariableDefinition.DEFINED);
-        if (symbolUsage.isRead() && isUndefined(varDef) && !isSymbolUsedInUnreachableBlocks(analysis, unreachableBlocks, symbol) && !isParameter(element)) {
+        if (symbolUsage.isRead() && isUndefined(varDef) && !isSymbolUsedInUnreachableBlocks(analysis, unreachableBlocks, symbol) && !isParameter(element)
+          && !ignoredSymbols.contains(symbol)) {
+          ignoredSymbols.add(symbol);
           ctx.addIssue(element, symbol.name() + " is used before it is defined. Move the definition before.");
         }
       });
