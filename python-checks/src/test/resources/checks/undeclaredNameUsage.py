@@ -70,8 +70,10 @@ def loop():
 def conditional():
     if False:
         condition_var = 0
+#       ^^^^^^^^^^^^^>
     else:
         print(condition_var)  # Noncompliant {{condition_var is used before it is defined. Move the definition before.}}
+#             ^^^^^^^^^^^^^
 
 def except_instance():
     try:
@@ -153,14 +155,21 @@ def declaration_in_try_with_break():
 
 def only_one_issue_per_name():
   print(xxx) # Noncompliant {{xxx is not defined. Change its name or define it before using it}}
+#       ^^^
   print(xxx) # OK, don't raise the same issue multiple times in the same function
+#       ^^^<
 
 #Still raising an issue for the same name in different functions
 def only_one_issue_per_name_2():
   print(xxx) # Noncompliant
+#       ^^^
   print(xxx) # OK, don't raise the same issue multiple times
+#       ^^^<
 
 def only_one_issue_per_name_3():
   print(xxx) # Noncompliant {{xxx is used before it is defined. Move the definition before.}}
+#       ^^^
   print(xxx) # OK, don't raise the same issue multiple times
+#       ^^^<
   xxx = "hello"
+# ^^^<

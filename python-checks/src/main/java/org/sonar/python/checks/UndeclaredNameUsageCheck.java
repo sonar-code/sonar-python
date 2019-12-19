@@ -23,12 +23,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.sonar.check.Rule;
 import org.sonar.plugins.python.api.PythonSubscriptionCheck;
 import org.sonar.plugins.python.api.SubscriptionContext;
 import org.sonar.plugins.python.api.cfg.CfgBlock;
 import org.sonar.plugins.python.api.cfg.ControlFlowGraph;
+import org.sonar.plugins.python.api.symbols.Usage;
 import org.sonar.plugins.python.api.tree.BaseTreeVisitor;
 import org.sonar.plugins.python.api.tree.CallExpression;
 import org.sonar.plugins.python.api.tree.FileInput;
@@ -46,31 +48,34 @@ import org.sonar.python.tree.TreeUtils;
 public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
   private boolean hasWildcardImport = false;
   private boolean callGlobalsOrLocals = false;
-  private List<String> ignoredNames = new ArrayList<>();
+  private static Map<String, List<Name>> nameIssues = new HashMap<>();
   private static List<Symbol> ignoredSymbols = new ArrayList<>();
+  private SubscriptionContext subscriptionContext;
 
   @Override
   public void initialize(Context context) {
-
     context.registerSyntaxNodeConsumer(Tree.Kind.FILE_INPUT, ctx -> {
+      subscriptionContext = ctx;
       FileInput fileInput = (FileInput) ctx.syntaxNode();
       ExceptionVisitor exceptionVisitor = new ExceptionVisitor();
       fileInput.accept(exceptionVisitor);
       hasWildcardImport = exceptionVisitor.hasWildcardImport;
       callGlobalsOrLocals = exceptionVisitor.callGlobalsOrLocals;
-      ignoredNames.clear();
+      nameIssues.clear();
+      ignoredSymbols.clear();
     });
 
     context.registerSyntaxNodeConsumer(Tree.Kind.NAME, ctx -> {
       Name name = (Name) ctx.syntaxNode();
-      if (!callGlobalsOrLocals && !hasWildcardImport && name.isVariable() && name.symbol() == null && !ignoredNames.contains(name.name())) {
-        ignoredNames.add(name.name());
-        ctx.addIssue(name, name.name() + " is not defined. Change its name or define it before using it");
+      if (!callGlobalsOrLocals && !hasWildcardImport && name.isVariable() && name.symbol() == null) {
+        List<Name> names = nameIssues.getOrDefault(name.name(), new ArrayList<>());
+        names.add(name);
+        nameIssues.putIfAbsent(name.name(), names);
       }
     });
 
     context.registerSyntaxNodeConsumer(Tree.Kind.FUNCDEF, ctx -> {
-      ignoredNames.clear();
+      addNameIssues();
       ignoredSymbols.clear();
       FunctionDef functionDef = (FunctionDef) ctx.syntaxNode();
       if (TreeUtils.hasDescendant(functionDef, tree -> tree.is(Tree.Kind.TRY_STMT))) {
@@ -98,7 +103,11 @@ public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
         if (symbolUsage.isRead() && isUndefined(varDef) && !isSymbolUsedInUnreachableBlocks(analysis, unreachableBlocks, symbol) && !isParameter(element)
           && !ignoredSymbols.contains(symbol)) {
           ignoredSymbols.add(symbol);
-          ctx.addIssue(element, symbol.name() + " is used before it is defined. Move the definition before.");
+          Optional<Usage> suspectUsage = symbol.usages().stream().filter(u -> TreeUtils.hasDescendant(element, t -> t.equals(u.tree()))).findFirst();
+          suspectUsage.ifPresent(s -> {
+            PreciseIssue issue = ctx.addIssue(s.tree(), symbol.name() + " is used before it is defined. Move the definition before.");
+            symbol.usages().stream().filter(u -> !u.equals(s)).forEach(us -> issue.secondary(us.tree(), null));
+          });
         }
       });
     }
@@ -114,6 +123,20 @@ public class UndeclaredNameUsageCheck extends PythonSubscriptionCheck {
 
   private static boolean isUndefined(DefinedVariablesAnalysis.VariableDefinition varDef) {
     return varDef == DefinedVariablesAnalysis.VariableDefinition.UNDEFINED;
+  }
+
+  @Override
+  public void leaveFile() {
+    addNameIssues();
+  }
+
+  private void addNameIssues() {
+    nameIssues.forEach((name, list) -> {
+      Name first = list.get(0);
+      PreciseIssue issue = subscriptionContext.addIssue(first, first.name() + " is not defined. Change its name or define it before using it");
+      list.stream().skip(1).forEach(n -> issue.secondary(n, null));
+    });
+    nameIssues.clear();
   }
 
   private static class ExceptionVisitor extends BaseTreeVisitor {
